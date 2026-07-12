@@ -6,24 +6,23 @@ const HRDetails = require('../models/HRDetails');
 
 const router = express.Router();
 
-// Route 1: Create an Employee Account
+// ---------------------------------------------------
+// CREATE ROUTES
+// ---------------------------------------------------
+
+// Route: Create an Employee Account
 router.post('/create-employee', async (req, res) => {
   try {
-    // Extracts required fields and sweeps the rest into "otherFields"
     const { name, email, password, referenceFaceImages, ...otherFields } = req.body;
 
-    // 1. Check if the email already exists
     const existingUser = await EmployeeDetails.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: 'Employee email already exists.' });
     }
 
-    // 2. Hash the password securely
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 3. Save the new employee to the database
-    // Spread operator (...otherFields) auto-maps frontend inputs to DB fields
     const newEmployee = new EmployeeDetails({
       name,
       email,
@@ -42,7 +41,7 @@ router.post('/create-employee', async (req, res) => {
   }
 });
 
-// Route 2: Create an HR Account
+// Route: Create an HR Account
 router.post('/create-hr', async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -67,6 +66,65 @@ router.post('/create-hr', async (req, res) => {
   } catch (error) {
     console.error('Error creating HR:', error);
     res.status(500).json({ message: 'Server error while creating HR.' });
+  }
+});
+
+// ---------------------------------------------------
+// READ, UPDATE, DELETE ROUTES (For Modifier Page)
+// ---------------------------------------------------
+
+// Route: Get all Employees (Excludes passwords for security)
+router.get('/employees', async (req, res) => {
+  try {
+    const employees = await EmployeeDetails.find().select('-password');
+    res.status(200).json(employees);
+  } catch (error) {
+    console.error('Error fetching employees:', error);
+    res.status(500).json({ message: 'Server error while fetching employees.' });
+  }
+});
+
+// Route: Update an Employee
+router.put('/employees/:id', async (req, res) => {
+  try {
+    const { password, ...updateData } = req.body;
+
+    // If the admin provided a new password, hash it and add it to the update payload
+    if (password && password.trim() !== '') {
+      const salt = await bcrypt.genSalt(10);
+      updateData.password = await bcrypt.hash(password, salt);
+    }
+
+    const updatedEmployee = await EmployeeDetails.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },
+      { new: true } // Returns the newly updated document
+    ).select('-password');
+
+    if (!updatedEmployee) {
+      return res.status(404).json({ message: 'Employee not found.' });
+    }
+
+    res.status(200).json({ message: 'Employee updated successfully!', employee: updatedEmployee });
+  } catch (error) {
+    console.error('Error updating employee:', error);
+    res.status(500).json({ message: 'Server error while updating employee.' });
+  }
+});
+
+// Route: Delete an Employee
+router.delete('/employees/:id', async (req, res) => {
+  try {
+    const deletedEmployee = await EmployeeDetails.findByIdAndDelete(req.params.id);
+    
+    if (!deletedEmployee) {
+      return res.status(404).json({ message: 'Employee not found.' });
+    }
+
+    res.status(200).json({ message: 'Employee deleted successfully.' });
+  } catch (error) {
+    console.error('Error deleting employee:', error);
+    res.status(500).json({ message: 'Server error while deleting employee.' });
   }
 });
 
