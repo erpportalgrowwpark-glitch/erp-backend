@@ -1,6 +1,7 @@
 // backend/routes/EmployeeAttendanceManagement.js
 const express = require('express');
 const EmployeeAttendanceDetails = require('../models/EmployeeAttendanceDetails');
+const EmployeeDetails = require('../models/EmployeeDetails');
 
 const router = express.Router();
 
@@ -39,14 +40,12 @@ router.get('/metrics/:employeeId', async (req, res) => {
 
     if (!date) return res.status(400).json({ message: 'Date is required.' });
 
-    // 1. Find all records for THIS MONTH
     const currentYearMonth = date.substring(0, 7); 
     const monthlyRecords = await EmployeeAttendanceDetails.find({
       employeeId,
       date: { $regex: `^${currentYearMonth}` }
     });
 
-    // 2. Figure out the start date of "This Week" (Sunday)
     const todayObj = new Date(date);
     const startOfWeekObj = new Date(todayObj);
     startOfWeekObj.setDate(todayObj.getDate() - todayObj.getDay());
@@ -56,8 +55,6 @@ router.get('/metrics/:employeeId', async (req, res) => {
     let weekMs = 0;
     let monthMs = 0;
     let todayLogs = [];
-    
-    // NEW: Object to group data per day for the Charts
     let chartDataMap = {};
 
     monthlyRecords.forEach(record => {
@@ -83,7 +80,6 @@ router.get('/metrics/:employeeId', async (req, res) => {
         });
       }
 
-      // Group data for the charts
       if (!chartDataMap[record.date]) {
         chartDataMap[record.date] = { date: record.date, workMs: 0, tapIns: [] };
       }
@@ -91,13 +87,9 @@ router.get('/metrics/:employeeId', async (req, res) => {
       chartDataMap[record.date].tapIns.push(new Date(record.tapInTime));
     });
 
-    // Calculate Delay per day (Target time: 9:35 AM = 575 minutes)
     const chartData = Object.values(chartDataMap).map(day => {
-      // Find the absolute first tap in of the day
       const firstTap = new Date(Math.min(...day.tapIns));
       const inMins = (firstTap.getHours() * 60) + firstTap.getMinutes();
-      
-      // If tapped in after 9:35 AM, calculate the delay in ms
       const delayMins = Math.max(0, inMins - 575); 
       const delayMs = delayMins * 60000;
 
@@ -106,14 +98,14 @@ router.get('/metrics/:employeeId', async (req, res) => {
         workMs: day.workMs,
         delayMs: delayMs
       };
-    }).sort((a, b) => a.date.localeCompare(b.date)); // Sort chronologically
+    }).sort((a, b) => a.date.localeCompare(b.date)); 
 
     res.status(200).json({
       today: formatTimeDuration(todayMs),
       week: formatTimeDuration(weekMs),
       month: formatTimeDuration(monthMs),
       logs: todayLogs,
-      chartData: chartData // Send the raw MS chart data to React
+      chartData: chartData 
     });
 
   } catch (error) {
@@ -165,6 +157,94 @@ router.post('/tap-out', async (req, res) => {
   } catch (error) {
     console.error('Tap Out Error:', error);
     res.status(500).json({ message: 'Server error during tap out.' });
+  }
+});
+
+// ---------------------------------------------------
+// ADMIN OVERVIEW GRID ROUTE
+// ---------------------------------------------------
+router.get('/admin/overview', async (req, res) => {
+  try {
+    const { month } = req.query; 
+    if (!month) return res.status(400).json({ message: 'Month query parameter is required.' });
+
+    const employees = await EmployeeDetails.find({ role: 'employee' }).select('_id name');
+    
+    const records = await EmployeeAttendanceDetails.find({
+      date: { $regex: `^${month}` }
+    });
+
+    const overviewData = employees.map(emp => {
+      const empRecords = records.filter(r => r.employeeId.toString() === emp._id.toString());
+      
+      const days = {};
+      empRecords.forEach(record => {
+        if (!days[record.date]) days[record.date] = [];
+        days[record.date].push({
+          id: record._id, // NEW: Added record ID for editing
+          in: record.tapInTime,
+          out: record.tapOutTime || null
+        });
+      });
+
+      return {
+        employeeId: emp._id,
+        name: emp.name,
+        attendance: days
+      };
+    });
+
+    res.status(200).json(overviewData);
+  } catch (error) {
+    console.error('Admin Overview Error:', error);
+    res.status(500).json({ message: 'Server error fetching attendance overview.' });
+  }
+});
+
+// ---------------------------------------------------
+// NEW: ADMIN RECORD MODIFICATION ROUTES
+// ---------------------------------------------------
+
+// Update a specific attendance record
+router.put('/admin/record/:recordId', async (req, res) => {
+  try {
+    const { recordId } = req.params;
+    const { newInTime, newOutTime } = req.body; // Expects "HH:MM" format
+
+    const record = await EmployeeAttendanceDetails.findById(recordId);
+    if (!record) return res.status(404).json({ message: 'Record not found.' });
+
+    // Timezone safe logic: Merge the new "HH:MM" with the original date string
+    if (newInTime) {
+      record.tapInTime = new Date(`${record.date}T${newInTime}:00`);
+    }
+    if (newOutTime) {
+      record.tapOutTime = new Date(`${record.date}T${newOutTime}:00`);
+    } else {
+      // If admin clears the tap out time, we unset it
+      record.tapOutTime = undefined;
+    }
+
+    await record.save();
+    res.status(200).json({ message: 'Record updated successfully.' });
+  } catch (error) {
+    console.error('Update Record Error:', error);
+    res.status(500).json({ message: 'Server error updating record.' });
+  }
+});
+
+// Delete a specific attendance record
+router.delete('/admin/record/:recordId', async (req, res) => {
+  try {
+    const { recordId } = req.params;
+    const deletedRecord = await EmployeeAttendanceDetails.findByIdAndDelete(recordId);
+    
+    if (!deletedRecord) return res.status(404).json({ message: 'Record not found.' });
+
+    res.status(200).json({ message: 'Record deleted successfully.' });
+  } catch (error) {
+    console.error('Delete Record Error:', error);
+    res.status(500).json({ message: 'Server error deleting record.' });
   }
 });
 
